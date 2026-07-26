@@ -1,9 +1,7 @@
 from dataclasses import dataclass
 from functools import lru_cache
-# GENERAL POLYGONAL-NUMBER MACAULAY2 CODE GENERATOR
-#
+
 # for even m we construct C(m) and for odd m we construct C(m+1) and set  C_o(m) = (C(m+1); G).
-#
 # The symbolic code uses exactly  Q, R, P, sigma_a, where a belongs to {4,6,8,10}.
 @dataclass(frozen=True)
 class CodeSym:
@@ -443,13 +441,6 @@ def macaulay2_code(m, good_qs=None):
     lines.append("")
     lines.append("    J := groebnerBasis I;")
     lines.append("    computedCount := #flatten entries basis(S/ideal J);")
-    lines.append(
-        "    expectedCount := ((("
-        + str(m - 2)
-        + ")*qq^2)-("
-        + str(m - 4)
-        + ")*qq)//2;"
-    )
     lines.append("")
     lines.append("    (qq,computedCount)")
     lines.append(")")
@@ -516,13 +507,10 @@ def show(m, good_qs=None):
 # 14. USER INPUT
 # Change only m and good_qs.
 
-m = 175
+m = 12
 
-good_qs = [2]
+good_qs = [2,3,4,5,7]
 
-
-# ============================================================
 # 15. RUN
-# ============================================================
 
 show(m,good_qs=good_qs)
