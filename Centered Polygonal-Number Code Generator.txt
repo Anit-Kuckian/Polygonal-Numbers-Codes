@@ -1,514 +1,1876 @@
 from dataclasses import dataclass
 from functools import lru_cache
 
-# for even m we construct C(m) and for odd m we construct C(m+1) and set  C_o(m) = (C(m+1); G).
-# The symbolic code uses exactly  Q, R, P, sigma_a, where a belongs to {4,6,8,10}.
+
+# ============================================================
+# SYMBOLIC CODE FOR CENTERED POLYGONAL-NUMBER FAMILIES
+#
+# Internal entries:
+#
+#     Q0
+#     Q
+#     Q[1,...,s]
+#     beta
+#     beta[1,...,s]
+#     seed_a
+#     seed_a[1,...,s]
+#
+# where a belongs to {4,6,8,10}.
+#
+# IMPORTANT:
+#
+# "seed" is ONLY an internal Python tag.
+# It does NOT introduce a new mathematical polynomial family.
+#
+# The mathematical seed polynomials are exactly:
+#
+# a=4:
+#     Y0Y1 - 1
+#
+# a=6:
+#     (Y0Y1 - 1)(Y0 - 1)
+#
+# a=8:
+#     (Y0Y1 - 1)(Y0 - 1)Y1
+#
+# a=10:
+#     (Y0Y1 - 1)(Y0 - 1)Y1
+#     (Y1 - (Y0 - 1)^(q-1))
+#
+# ============================================================
+
+
 @dataclass(frozen=True)
 class CodeSym:
-    kind: str                 # "Q", "R", "P", "sigma"
-    a: int = None             # only used for sigma_a
-    J: tuple = ()             # bracket indices
-# 1. INPUT AND PARITY
+    kind: str
+    a: int = None
+    J: tuple = ()
+
+
+# ============================================================
+# 1. INPUT
+# ============================================================
+
 def validate_m(m):
+
     m = int(m)
+
     if m < 3:
-        print("Error: m must be an integer greater than or equal to 3.")
-        return None
+        raise ValueError(
+            "m must be an integer greater than or equal to 3."
+        )
+
     return m
 
+
 def associated_even_integer(m):
+    """
+    For odd m use the even family F_C^(m+1).
+    """
+
     m = validate_m(m)
+
     if m % 2 == 0:
         return m
+
     return m + 1
 
-# 2. BLOCK INFORMATION
 
-def block_serial(e):
-    e = int(e)
-    if e < 4 or e % 2 != 0:
-        print("Error: e must be an even integer greater than or equal to 4.")
-        return None
-    return (e - 4) // 8 + 1
+# ============================================================
+# 2. n(m), I_n, PARENT, nu(m)
+# ============================================================
 
-def block_tuple(N):
-    N = int(N)
-    return (8 * N - 4, 8 * N - 2, 8 * N, 8 * N + 2)
+def n_value(m):
+    """
+    n(m) = min { n >= 2 : m <= 2^(n+1)+2 }.
 
-def block_label(N):
-    return "A_" + str(int(N))
+    For even m >= 12:
 
-def position_in_block(e):
-    N = block_serial(e)
-    first_element = 8 * N - 4
-    return (e - first_element) // 2 + 1
+        n(m) = floor(log_2(m-4)).
+    """
 
-def seed_type(e):
-    return 2 * position_in_block(e) + 2
+    m = int(m)
 
-# 3. LENGTH OF THE POLYNOMIAL SYSTEM
+    if m < 4 or m % 2 != 0:
+        raise ValueError(
+            "n(m) is used here for even m >= 4."
+        )
 
-def code_length_from_serial(N):
-    N = int(N)
-    if N == 1:
+    if m <= 10:
         return 2
-    return (N - 1).bit_length() + 2
+
+    return (m - 4).bit_length() - 1
 
 
-def required_length(e):
-    return code_length_from_serial(block_serial(e))
+def parent_even_number(m):
+    """
+    Par(m) = m - 2^(n(m)), for m >= 12.
+    """
 
-# 4. PARENT BLOCK AND PARENT NUMBER
+    m = int(m)
 
-def parent_serial(N):
-    N = int(N)
-    if N == 1:
+    if m < 4 or m % 2 != 0:
+        raise ValueError(
+            "parent_even_number requires an even m >= 4."
+        )
+
+    if m in (4, 6, 8, 10):
         return None
-    largest_power = 2 ** ((N - 1).bit_length() - 1)
-    return N - largest_power
 
-def parent_even_number(e):
-    N = block_serial(e)
-    if N == 1:
+    n = n_value(m)
+
+    return m - 2**n
+
+
+def nu(m):
+    """
+    nu(m) = n(m) - n(Par(m)) - 1.
+    """
+
+    p = parent_even_number(m)
+
+    if p is None:
         return None
-    position = position_in_block(e)
-    parent_N = parent_serial(N)
-    parent_elements = block_tuple(parent_N)
-    return parent_elements[position - 1]
 
-def parent_block_chain(e):
-    chain = [block_serial(e)]
-    while parent_serial(chain[-1]) is not None:
-        chain.append(parent_serial(chain[-1]))
-    return chain
+    return (
+        n_value(m)
+        - n_value(p)
+        - 1
+    )
 
-def parent_number_chain(e):
-    chain = [e]
+
+def parent_number_chain(m):
+    """
+    Returns
+
+        m -> Par(m) -> ... -> m_0
+
+    with m_0 in {4,6,8,10}.
+    """
+
+    m = int(m)
+
+    chain = [m]
+
     while parent_even_number(chain[-1]) is not None:
-        chain.append(parent_even_number(chain[-1]))
+
+        chain.append(
+            parent_even_number(chain[-1])
+        )
+
     return chain
 
-# 5. SYMBOLIC CODE
-# Symbols:
+
+# ============================================================
+# 3. BLOCK INFORMATION A_{n,j}
+# ============================================================
+
+def block_position(m):
+    """
+    For m in I_n, n >= 3,
+
+        m = 2^n + 4 + 8(j-1) + 2(k-1).
+
+    Returns (n,j,k).
+
+    For m in I_2, returns (2,1,k).
+    """
+
+    m = int(m)
+
+    n = n_value(m)
+
+    if n == 2:
+
+        k = (m - 4)//2 + 1
+
+        return (
+            2,
+            1,
+            k
+        )
+
+    r = (
+        m
+        - (2**n + 4)
+    ) // 2
+
+    j = r // 4 + 1
+
+    k = r % 4 + 1
+
+    return (
+        n,
+        j,
+        k
+    )
+
+
+def block_tuple(n, j):
+
+    if n == 2:
+        return (
+            4,
+            6,
+            8,
+            10
+        )
+
+    a = (
+        2**n
+        + 4
+        + 8*(j - 1)
+    )
+
+    return (
+        a,
+        a + 2,
+        a + 4,
+        a + 6
+    )
+
+
+def block_label(m):
+
+    n, j, k = block_position(m)
+
+    return (
+        "A_{"
+        + str(n)
+        + ","
+        + str(j)
+        + "}"
+    )
+
+
+def block_chain(m):
+
+    return [
+        block_label(a)
+        for a in parent_number_chain(m)
+    ]
+
+
+# ============================================================
+# 4. INITIAL CODES
 #
-#     Q
-#     R, R[1,...,s]
-#     P, P[1,...,s]
-#     sigma_a, sigma_a[1,...,s]
+# Centered initial associated families:
 #
-# Lift rules:
+# F_C^(4)
+# =
+# (
+#   Y0^q-Y0,
+#   Y0Y1-1
+# )
 #
-#     Q                     -> R
-#     R                     -> R[1]
-#     R[1,...,s]            -> R[1,...,s+1]
-#     P                     -> P[1]
-#     P[1,...,s]            -> P[1,...,s+1]
-#     sigma_a               -> sigma_a[1]
-#     sigma_a[1,...,s]      -> sigma_a[1,...,s+1]
+# F_C^(6)
+# =
+# (
+#   Y0^q-Y0,
+#   (Y0Y1-1)(Y0-1)
+# )
+#
+# F_C^(8)
+# =
+# (
+#   Y0^q-Y0,
+#   (Y0Y1-1)(Y0-1)Y1
+# )
+#
+# F_C^(10)
+# =
+# (
+#   Y0^q-Y0,
+#   (Y0Y1-1)(Y0-1)Y1
+#   (Y1-(Y0-1)^(q-1))
+# )
+#
+# Internally:
+#
+# C_C(4)  = (Q0, seed_4)
+# C_C(6)  = (Q0, seed_6)
+# C_C(8)  = (Q0, seed_8)
+# C_C(10) = (Q0, seed_10)
+#
+# Again: "seed" is only an internal programming tag.
+# ============================================================
+
+def initial_code(m):
+
+    if m == 4:
+
+        return (
+            CodeSym("Q0"),
+            CodeSym("seed", 4)
+        )
+
+    if m == 6:
+
+        return (
+            CodeSym("Q0"),
+            CodeSym("seed", 6)
+        )
+
+    if m == 8:
+
+        return (
+            CodeSym("Q0"),
+            CodeSym("seed", 8)
+        )
+
+    if m == 10:
+
+        return (
+            CodeSym("Q0"),
+            CodeSym("seed", 10)
+        )
+
+    raise ValueError(
+        "Initial code only defined for 4,6,8,10."
+    )
+
+
+# ============================================================
+# 5. THE L OPERATOR ON CODE ENTRIES
+#
+# Q0                    -> Q
+#
+# Q                     -> Q[1]
+#
+# Q[1,...,s]            -> Q[1,...,s+1]
+#
+# beta                  -> beta[1]
+#
+# beta[1,...,s]         -> beta[1,...,s+1]
+#
+# seed_a                -> seed_a[1]
+#
+# seed_a[1,...,s]       -> seed_a[1,...,s+1]
+#
+# This exactly records application of L to the
+# actual centered seed polynomial.
+# ============================================================
 
 def lift_symbol(c):
-    if c.kind == "Q":
-        return CodeSym("R")
-    new_indices = ((1,)+
+
+    if c.kind == "Q0":
+
+        return CodeSym("Q")
+
+    if c.kind in (
+        "Q",
+        "beta",
+        "seed"
+    ):
+
+        if len(c.J) == 0:
+
+            new_J = (1,)
+
+        else:
+
+            new_J = tuple(
+                range(
+                    1,
+                    len(c.J) + 2
+                )
+            )
+
+        return CodeSym(
+            c.kind,
+            c.a,
+            new_J
+        )
+
+    raise ValueError(
+        "Unknown code symbol."
+    )
+
+
+def L_code(C):
+    """
+    C_C(L(F))
+      =
+      (Q0, L(c1),...,L(cn)).
+    """
+
+    return (
+        CodeSym("Q0"),
+    ) + tuple(
+        lift_symbol(c)
+        for c in C
+    )
+
+
+# ============================================================
+# 6. THE E OPERATOR
+#
+# E^ell(C) appends ell copies of beta.
+# ============================================================
+
+def E_code(C, ell=1):
+
+    ell = int(ell)
+
+    if ell < 0:
+        raise ValueError(
+            "ell must be nonnegative."
+        )
+
+    return (
+        tuple(C)
+        +
         tuple(
-            j + 1
-            for j in c.J
+            CodeSym("beta")
+            for _ in range(ell)
         )
     )
-    return CodeSym(c.kind,c.a,new_indices)
+
+
+# ============================================================
+# 7. RECURSIVE CONSTRUCTION
+#
+# Definition 6.4:
+#
+# F_C^(m)
+# =
+# E^{nu(m)}
+# (
+#     L(
+#         F_C^(Par(m))
+#     )
+# ).
+#
+# Hence internally:
+#
+# C_C(m)
+# =
+# E^{nu(m)}
+# (
+#     L(
+#         C_C(Par(m))
+#     )
+# ).
+# ============================================================
 
 @lru_cache(None)
-def code_from_serial(N, a):
-    """
-    Construct the code belonging to block A_N
-    with seed polynomial sigma_a.
-    """
-    N = int(N)
-    a = int(a)
-    if N == 1:
-        return (CodeSym("Q"),CodeSym("sigma", a))
-    parent_N = parent_serial(N)
-    parent_code = code_from_serial(parent_N,a)
-    lifted_code = (CodeSym("Q"),) + tuple(lift_symbol(c) for c in parent_code)
+def even_code(m):
 
-    padding = (code_length_from_serial(N)-len(lifted_code))
+    m = int(m)
 
-    if padding < 0:
-        raise RuntimeError("Negative padding occurred.")
+    if m < 4 or m % 2 != 0:
+        raise ValueError(
+            "even_code requires an even m >= 4."
+        )
 
-    extension_entries = tuple(
-        CodeSym("P")
-        for _ in range(padding)
+    if m in (
+        4,
+        6,
+        8,
+        10
+    ):
+
+        return initial_code(m)
+
+    p = parent_even_number(m)
+
+    C_parent = even_code(p)
+
+    C = L_code(C_parent)
+
+    C = E_code(
+        C,
+        nu(m)
     )
 
-    return (lifted_code+extension_entries)
+    return C
 
-def even_code(e):
-    N = block_serial(e)
-    a = seed_type(e)
-    return code_from_serial(N,a)
 
-# 6. TYPING CODE NOTATION
+# ============================================================
+# 8. INTERNAL SYMBOLIC STRING
+#
+# This is only for displaying the recursive structure.
+#
+# seed_a is NOT new mathematical notation.
+# ============================================================
 
 def symbol_string(c):
+
+    if c.kind == "Q0":
+        return "Q0"
+
     if c.kind == "Q":
-        return "Q"
-    if c.kind == "R":
-        base = "R"
-    elif c.kind == "P":
-        base = "P"
-    elif c.kind == "sigma":
-        base = ("sigma_"+ str(c.a))
+        base = "Q"
+
+    elif c.kind == "beta":
+        base = "beta"
+
+    elif c.kind == "seed":
+        base = (
+            "seed_"
+            + str(c.a)
+        )
+
     else:
-        raise ValueError("Unknown code symbol.")
+        raise ValueError(
+            "Unknown code symbol."
+        )
 
     if len(c.J) == 0:
         return base
-    indices = ",".join(str(j)for j in c.J)
-    return (base+"["+indices+"]")
 
-def even_code_string(e):
-    entries = [symbol_string(c)for c in even_code(e)]
-    return ("("+", ".join(entries)+")")
+    indices = ",".join(
+        str(j)
+        for j in c.J
+    )
+
+    return (
+        base
+        + "["
+        + indices
+        + "]"
+    )
+
+
+def even_code_string(m):
+
+    C = even_code(m)
+
+    return (
+        "("
+        + ", ".join(
+            symbol_string(c)
+            for c in C
+        )
+        + ")"
+    )
+
 
 def general_code_string(m):
+
     m = validate_m(m)
+
     e = associated_even_integer(m)
-    entries = ", ".join(symbol_string(c)for c in even_code(e))
+
+    C = even_code_string(e)
 
     if m % 2 == 0:
-        return ("("+ entries +")")
-    return ("(" + entries + "; G)")
+        return C
 
-# 7. POLYNOMIAL NOTATION
+    return (
+        C
+        + " ; Theta"
+    )
 
-# In the Y_t-slot:
-# R represents R_1(Z,Y_t).
-# R[1,...,s] represents R_{s+1}(Z,Y_1,...,Y_s,Y_t).  
+
+# ============================================================
+# 9. POLYNOMIAL NOTATION
 #
-# P represents P_1(Z,Y_t).
+# Q0 represents
 #
-# P[1,...,s] represents P_{s+1}(Z,Y_1,...,Y_s,Y_t).
-#       
-# sigma_a represents sigma_a(Z,Y_t).
+#     Q_0(Y_0)
+#     =
+#     Y_0^q-Y_0.
 #
-# sigma_a[1,...,s] represents sigma_a(Z,Y_1,...,Y_s,Y_t).
+#
+# Q represents Q_1.
+#
+# Q[1,...,s] represents Q_{s+1}.
+#
+#
+# beta represents beta_1.
+#
+# beta[1,...,s] represents beta_{s+1}.
+#
+#
+# The centered seed entries are expanded directly into
+# the actual polynomials.
+#
+# No Psi notation is introduced.
+# ============================================================
+
+def seed_base_notation(
+    a,
+    U,
+    V
+):
+
+    if a == 4:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+        )
+
+    if a == 6:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+        )
+
+    if a == 8:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+            + "*"
+            + V
+        )
+
+    if a == 10:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+            + "*"
+            + V
+            + "*("
+            + V
+            + "-("
+            + U
+            + "-1)^(q-1)"
+            + ")"
+        )
+
+    raise ValueError(
+        "a must belong to {4,6,8,10}."
+    )
 
 
-def notation_arguments(c, slot):
-    arguments = ["Z"]
-    arguments += ["Y_" + str(j)for j in c.J]
+def expand_seed_notation(
+    a,
+    arguments,
+    V
+):
 
-    arguments.append("Y_" + str(slot - 1))
-    return ",".join(arguments)
+    U0 = arguments[0]
 
-def polynomial_notation(c, slot):
-    if c.kind == "Q":
-        return "Q(Z)"
+    if len(arguments) == 1:
 
-    arguments = notation_arguments(c, slot)
-    order = len(c.J) + 1
+        return seed_base_notation(
+            a,
+            U0,
+            V
+        )
 
-    if c.kind == "R":
-        return "R_" + str(order) + "(" + arguments + ")"
+    tail = expand_seed_notation(
+        a,
+        arguments[1:],
+        V
+    )
 
-    if c.kind == "P":
-        return "P_" + str(order) + "(" + arguments + ")"
+    return (
+        "("
+        + "alpha("
+        + U0
+        + ","
+        + V
+        + ")"
+        + "+"
+        + "gamma("
+        + U0
+        + ")*"
+        + tail
+        + ")"
+    )
 
-    if c.kind == "sigma":
-        return "Psi_" + str(c.a) + "(" + arguments + ")"
 
-    raise ValueError("Unknown code symbol.")
-    
-def polynomial_list(m):
-    e = associated_even_integer(m)
-    C = even_code(e)
-    return [polynomial_notation(c,i + 1)
-        for i, c in enumerate(C)
+def indexed_arguments(
+    c,
+    final_index
+):
+
+    args = [
+        "Y_0"
     ]
 
-# 8. MACAULAY2 EXPANSION OF Polynomial R_s
-# R_0(U_0) = 0.
-# For s >= 1:
-# R_s(U_0,...,U_s) = alpha(U_0,U_s) + gamma(U_0)R_{s-1}(U_1,...,U_s).
-    
-def expand_R(arguments, V):
-    U0 = arguments[0]
-    if len(arguments) == 1:
-        return ("alpha(" + U0 + "," + V + ")" )
+    args += [
+        "Y_" + str(j)
+        for j in c.J
+    ]
 
-    tail = expand_R( arguments[1:], V )
-    return ( "(" + "alpha(" + U0 + "," + V + ")" + "+" + "gamma(" + U0 + ")*" + tail + ")" )
+    args.append(
+        "Y_" + str(final_index)
+    )
 
-# 9. MACAULAY2 EXPANSION OF polynomial P_s
-                
-# P_0(U_0) = U_0.
-#
-# For s >= 1:
-#
-# P_s(U_0,...,U_s) = alpha(U_0,U_s) + gamma(U_0)P_{s-1}(U_1,...,U_s).
+    return args
 
-def expand_P(arguments, V):
-    U0 = arguments[0]
 
-    if len(arguments) == 1:
-        return "(" + "alpha(" + U0 + "," + V + ")" + "+" + "gamma(" + U0 + ")*" + V + ")"
+def polynomial_notation(
+    c,
+    position
+):
 
-    tail = expand_P(arguments[1:], V)
+    final_index = (
+        position - 1
+    )
 
-    return "(" + "alpha(" + U0 + "," + V + ")" + "+" + "gamma(" + U0 + ")*" + tail + ")"
+    if c.kind == "Q0":
 
-# ============================================================
-# 10. MACAULAY2 EXPANSION OF sigma_a
-#
-# The two-variable seed is sigma_a(U,V).
-#
-# For s >= 2:
-#
-# sigma_a(U_0,...,U_s)
-#   = alpha(U_0,U_s)
-#     + gamma(U_0)sigma_a(U_1,...,U_s).
-# ============================================================
+        return (
+            "Q_0(Y_0)"
+        )
 
-def expand_sigma(a, arguments, V):
-    U0 = arguments[0]
+    args = [
+        "Y_0"
+    ] + [
+        "Y_" + str(j)
+        for j in c.J
+    ]
 
-    if len(arguments) == 1:
-        return "Psi" + str(a) + "(" + U0 + "," + V + ")"
+    V = (
+        "Y_"
+        + str(final_index)
+    )
 
-    tail = expand_sigma(a, arguments[1:], V)
+    order = (
+        len(c.J)
+        + 1
+    )
 
-    return "(" + "alpha(" + U0 + "," + V + ")" + "+" + "gamma(" + U0 + ")*" + tail + ")"
-
-# 11. CONVERT CODE ENTRY INTO MACAULAY2
-
-def polynomial_M2(c, slot):
     if c.kind == "Q":
-        return "Q(z)"
 
-    final_variable = "y" + str(slot - 1)
-    arguments = ["z"] + ["y" + str(j) for j in c.J]
+        return (
+            "Q_"
+            + str(order)
+            + "("
+            + ",".join(
+                args + [V]
+            )
+            + ")"
+        )
 
-    if c.kind == "R":
-        return expand_R(arguments, final_variable)
+    if c.kind == "beta":
 
-    if c.kind == "P":
-        return expand_P(arguments, final_variable)
+        return (
+            "beta_"
+            + str(order)
+            + "("
+            + ",".join(
+                args + [V]
+            )
+            + ")"
+        )
 
-    if c.kind == "sigma":
-        return expand_sigma(c.a, arguments, final_variable)
+    if c.kind == "seed":
 
-    raise ValueError("Unknown code symbol.")
+        return expand_seed_notation(
+            c.a,
+            args,
+            V
+        )
 
-def polynomial_list_M2(m):
+    raise ValueError(
+        "Unknown code symbol."
+    )
+
+
+def polynomial_list(m):
+
     e = associated_even_integer(m)
+
     C = even_code(e)
 
-    return [polynomial_M2(c, i + 1) for i, c in enumerate(C)]
+    return [
+        polynomial_notation(
+            c,
+            i
+        )
+        for i, c in enumerate(
+            C,
+            start=1
+        )
+    ]
 
-# 12. GENERATING THE COPYABLE MACAULAY2 CODE
 
-def macaulay2_code(m, good_qs=None):
+# ============================================================
+# 10. MACAULAY2 EXPANSION OF Q_s
+#
+# Q_0(U) = U^q-U.
+#
+# For s >= 1:
+#
+# Q_s(U0,...,Us)
+# =
+# alpha(U0,Us)
+# +
+# gamma(U0)Q_{s-1}(U1,...,Us).
+# ============================================================
+
+def expand_Q(
+    arguments,
+    V
+):
+
+    U0 = arguments[0]
+
+    if len(arguments) == 1:
+
+        return (
+            "("
+            + "alpha("
+            + U0
+            + ","
+            + V
+            + ")"
+            + "+"
+            + "gamma("
+            + U0
+            + ")*Q0("
+            + V
+            + ")"
+            + ")"
+        )
+
+    tail = expand_Q(
+        arguments[1:],
+        V
+    )
+
+    return (
+        "("
+        + "alpha("
+        + U0
+        + ","
+        + V
+        + ")"
+        + "+"
+        + "gamma("
+        + U0
+        + ")*"
+        + tail
+        + ")"
+    )
+
+
+# ============================================================
+# 11. MACAULAY2 EXPANSION OF beta_s
+#
+# beta_1(U0,U1)
+# =
+# alpha(U0,U1)
+# +
+# gamma(U0)U1.
+#
+#
+# beta_s(U0,...,Us)
+# =
+# alpha(U0,Us)
+# +
+# gamma(U0)beta_{s-1}(U1,...,Us).
+# ============================================================
+
+def expand_beta(
+    arguments,
+    V
+):
+
+    U0 = arguments[0]
+
+    if len(arguments) == 1:
+
+        return (
+            "("
+            + "alpha("
+            + U0
+            + ","
+            + V
+            + ")"
+            + "+"
+            + "gamma("
+            + U0
+            + ")*"
+            + V
+            + ")"
+        )
+
+    tail = expand_beta(
+        arguments[1:],
+        V
+    )
+
+    return (
+        "("
+        + "alpha("
+        + U0
+        + ","
+        + V
+        + ")"
+        + "+"
+        + "gamma("
+        + U0
+        + ")*"
+        + tail
+        + ")"
+    )
+
+
+# ============================================================
+# 12. MACAULAY2 EXPANSION OF THE ACTUAL CENTERED SEEDS
+#
+# These are exactly the second polynomials of (6.1).
+#
+# No Psi family is introduced.
+# ============================================================
+
+def seed_base_M2(
+    a,
+    U,
+    V
+):
+
+    if a == 4:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+        )
+
+    if a == 6:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+        )
+
+    if a == 8:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+            + "*"
+            + V
+        )
+
+    if a == 10:
+
+        return (
+            "("
+            + U
+            + "*"
+            + V
+            + "-1)"
+            + "*("
+            + U
+            + "-1)"
+            + "*"
+            + V
+            + "*("
+            + V
+            + "-("
+            + U
+            + "-1)^(qq-1)"
+            + ")"
+        )
+
+    raise ValueError(
+        "a must belong to {4,6,8,10}."
+    )
+
+
+def expand_seed(
+    a,
+    arguments,
+    V
+):
+
+    U0 = arguments[0]
+
+    if len(arguments) == 1:
+
+        return seed_base_M2(
+            a,
+            U0,
+            V
+        )
+
+    tail = expand_seed(
+        a,
+        arguments[1:],
+        V
+    )
+
+    return (
+        "("
+        + "alpha("
+        + U0
+        + ","
+        + V
+        + ")"
+        + "+"
+        + "gamma("
+        + U0
+        + ")*"
+        + tail
+        + ")"
+    )
+
+
+# ============================================================
+# 13. CONVERT SYMBOLIC ENTRY TO MACAULAY2 POLYNOMIAL
+# ============================================================
+
+def polynomial_M2(
+    c,
+    position
+):
+
+    final_index = (
+        position - 1
+    )
+
+    if c.kind == "Q0":
+
+        return (
+            "Q0(y0)"
+        )
+
+    V = (
+        "y"
+        + str(final_index)
+    )
+
+    arguments = [
+        "y0"
+    ] + [
+        "y" + str(j)
+        for j in c.J
+    ]
+
+    if c.kind == "Q":
+
+        return expand_Q(
+            arguments,
+            V
+        )
+
+    if c.kind == "beta":
+
+        return expand_beta(
+            arguments,
+            V
+        )
+
+    if c.kind == "seed":
+
+        return expand_seed(
+            c.a,
+            arguments,
+            V
+        )
+
+    raise ValueError(
+        "Unknown code symbol."
+    )
+
+
+def polynomial_list_M2(m):
+
+    e = associated_even_integer(m)
+
+    C = even_code(e)
+
+    return [
+        polynomial_M2(
+            c,
+            i
+        )
+        for i, c in enumerate(
+            C,
+            start=1
+        )
+    ]
+
+
+# ============================================================
+# 14. MACAULAY2 GENERATOR
+#
+# Same structure as the classical polygonal-number code.
+#
+# We first construct the defining family
+#
+#     x*y_i - F_i.
+#
+# For odd m, adjoin Theta(X,Y0).
+#
+# This gives C_m^*(q).
+#
+# Then the centered construction adds one extra point
+# using the variable z:
+#
+#     z(z-1)=0
+#
+#     (1-z)R=0
+#
+# for each defining polynomial R,
+#
+#     zx=0
+#
+#     zy_i=0.
+#
+# ============================================================
+
+def macaulay2_code(
+    m,
+    good_qs=None
+):
+
     m = validate_m(m)
-    odd_case = m % 2 == 1
+
+    odd_case = (
+        m % 2 == 1
+    )
+
     e = associated_even_integer(m)
 
     if good_qs is None:
-        good_qs = [2, 3, 4, 5, 7]
 
-    good_qs = [int(q) for q in good_qs]
+        good_qs = [
+            2,
+            3,
+            4,
+            5,
+            7
+        ]
 
-    number_of_polynomials = required_length(e)
-    y_variables = ["y" + str(i) for i in range(1, number_of_polynomials + 1)]
-    all_variables = ["x", "z"] + y_variables
-    ring_variables = ",".join(all_variables)
+    good_qs = [
+        int(q)
+        for q in good_qs
+    ]
 
-    polynomials = polynomial_list_M2(m)
+    C = even_code(e)
 
-    N = block_serial(e)
-    block_chain = parent_block_chain(e)
-    number_chain = parent_number_chain(e)
+    n = len(C)
 
-    block_chain_string = " -> ".join(block_label(A) for A in block_chain)
-    number_chain_string = " -> ".join(str(a) for a in number_chain)
+    y_variables = [
+        "y" + str(i)
+        for i in range(
+            n + 1
+        )
+    ]
+
+    ring_variables = ",".join(
+        [
+            "z",
+            "x"
+        ]
+        + y_variables
+    )
+
+    polynomials = polynomial_list_M2(e)
+
+    chain = parent_number_chain(e)
 
     lines = []
 
-    lines.append("clearAll")
+    lines.append(
+        "clearAll"
+    )
+
     lines.append("")
-    lines.append("-- ====================================================")
-    lines.append("-- POLYGONAL-NUMBER GENERATING SURFACE")
-    lines.append("-- ====================================================")
-    lines.append("-- m = " + str(m))
-    lines.append("-- parity = " + ("odd" if odd_case else "even"))
+
+    lines.append(
+        "-- ===================================================="
+    )
+
+    lines.append(
+        "-- CENTERED POLYGONAL-NUMBER FAMILY"
+    )
+
+    lines.append(
+        "-- ===================================================="
+    )
+
+    lines.append(
+        "-- m = "
+        + str(m)
+    )
+
+    lines.append(
+        "-- associated even integer = "
+        + str(e)
+    )
+
+    lines.append(
+        "-- n(m_even) = "
+        + str(
+            n_value(e)
+        )
+    )
+
+    lines.append(
+        "-- parent chain = "
+        + " -> ".join(
+            str(a)
+            for a in chain
+        )
+    )
+
+    lines.append(
+        "-- block chain = "
+        + " -> ".join(
+            block_chain(e)
+        )
+    )
 
     if odd_case:
-        lines.append("-- associated even integer = " + str(e))
-        lines.append("-- C(" + str(e) + ") = " + even_code_string(e))
-        lines.append("-- C_o(" + str(m) + ") = " + general_code_string(m))
-    else:
-        lines.append("-- C(" + str(m) + ") = " + general_code_string(m))
 
-    lines.append("-- block = " + block_label(N) + " = " + str(block_tuple(N)))
-    lines.append("-- parent-block chain = " + block_chain_string)
-    lines.append("-- parent-number chain = " + number_chain_string)
-    lines.append("")
-
-    lines.append("f = qq -> (")
-    lines.append("")
-    lines.append("    K := GF(qq);")
-    lines.append("")
+        lines.append(
+            "-- odd case: adjoin Theta(X,Y0)"
+        )
 
     lines.append("")
-    lines.append("    S := K[" + ring_variables + ", MonomialOrder=>Lex];")
+
+    lines.append(
+        "f = qq -> ("
+    )
+
     lines.append("")
 
-    # Basic polynomials
-    lines.append("    Q := U -> U^qq-U;")
-    lines.append("    Delta := U -> U^(qq-1);")
-    lines.append("    gamma := U -> 1-Delta(U);")
-    lines.append("    alpha := (U,V) -> Delta(U)*V*(V+U);")
-    lines.append("    Omega := (U,V) -> Delta(U)+Delta(V)-Delta(U)*Delta(V);")
+    lines.append(
+        "    K := GF(qq);"
+    )
+
     lines.append("")
 
-    lines.append("    rho1 := (U,V) -> U*V-1;")
-    lines.append("    rho2 := (U,V) -> U-1;")
-    lines.append("    rho3 := (U,V) -> V;")
-    lines.append("    rho4 := (U,V) -> V-Delta(U-1);")
+    lines.append(
+        "    S := K["
+        + ring_variables
+        + ", MonomialOrder=>Lex];"
+    )
+
     lines.append("")
 
-    lines.append("    Psi4 := (U,V) -> rho1(U,V);")
-    lines.append("    Psi6 := (U,V) -> rho1(U,V)*rho2(U,V);")
-    lines.append("    Psi8 := (U,V) -> rho1(U,V)*rho2(U,V)*rho3(U,V);")
-    lines.append("    Psi10 := (U,V) -> rho1(U,V)*rho2(U,V)*rho3(U,V)*rho4(U,V);")
+    # Fundamental functions
+
+    lines.append(
+        "    Q0 := U -> U^qq-U;"
+    )
+
+    lines.append(
+        "    Delta := U -> U^(qq-1);"
+    )
+
+    lines.append(
+        "    gamma := U -> 1-Delta(U);"
+    )
+
+    lines.append(
+        "    alpha := (U,V) -> "
+        "Delta(U)*V*(V+U);"
+    )
+
     lines.append("")
 
-    # Write F_1,...,F_n
-    for i, polynomial in enumerate(polynomials, start=1):
-        lines.append("    F" + str(i) + " := " + polynomial + ";")
+    # Associated family F_1,...,F_n
 
-    # Odd selector polynomial G
-    if odd_case:
-        lines.append("")
-        lines.append("    pp := char K;")
-        lines.append("    rr := 0;")
-        lines.append("    fieldSize := 1;")
-        lines.append("")
-        lines.append("    while fieldSize < qq do (")
-        lines.append("        fieldSize = fieldSize*pp;")
-        lines.append("        rr = rr+1;")
-        lines.append("    );")
-        lines.append("")
-        lines.append("    tau := 0*x;")
-        lines.append("    i := 0;")
-        lines.append("")
-        lines.append("    while i < rr do (")
-        lines.append("        tau = tau+z^(pp^i);")
-        lines.append("        i = i+1;")
-        lines.append("    );")
-        lines.append("")
-        lines.append("    LambdaQ := qq*(qq-1)//2;")
-        lines.append("    eps2 := (2*x^0)^(qq-1);")
-        lines.append("")
-        lines.append("    G := eps2*x*(x^LambdaQ-1)+(1-eps2)*x^(qq-1)*tau;")
+    for i, polynomial in enumerate(
+        polynomials,
+        start=1
+    ):
 
-    # Surface and finite-field equations
-    equations = [
-        "x*y" + str(i) + "-F" + str(i)
-        for i in range(1, number_of_polynomials + 1)
-    ]
+        lines.append(
+            "    F"
+            + str(i)
+            + " := "
+            + polynomial
+            + ";"
+        )
+
+    # Theta for odd m
 
     if odd_case:
-        equations.append("G")
 
-    equations += ["x^qq-x", "z^qq-z"]
+        lines.append("")
 
-    equations += [
-        "y" + str(i) + "^qq-y" + str(i)
-        for i in range(1, number_of_polynomials + 1)
-    ]
+        lines.append(
+            "    pp := char K;"
+        )
+
+        lines.append(
+            "    rr := 0;"
+        )
+
+        lines.append(
+            "    fieldSize := 1;"
+        )
+
+        lines.append("")
+
+        lines.append(
+            "    while fieldSize < qq do ("
+        )
+
+        lines.append(
+            "        fieldSize = fieldSize*pp;"
+        )
+
+        lines.append(
+            "        rr = rr+1;"
+        )
+
+        lines.append(
+            "    );"
+        )
+
+        lines.append("")
+
+        lines.append(
+            "    traceY0 := 0*y0;"
+        )
+
+        lines.append(
+            "    ii := 0;"
+        )
+
+        lines.append("")
+
+        lines.append(
+            "    while ii < rr do ("
+        )
+
+        lines.append(
+            "        traceY0 = "
+            "traceY0+y0^(pp^ii);"
+        )
+
+        lines.append(
+            "        ii = ii+1;"
+        )
+
+        lines.append(
+            "    );"
+        )
+
+        lines.append("")
+
+        lines.append(
+            "    LambdaQ := "
+            "qq*(qq-1)//2;"
+        )
+
+        lines.append(
+            "    eps2 := "
+            "(2*x^0)^(qq-1);"
+        )
+
+        lines.append("")
+
+        lines.append(
+            "    Theta := "
+            "eps2*x*(x^LambdaQ-1)"
+            "+"
+            "(1-eps2)*x^(qq-1)*traceY0;"
+        )
+
+    # --------------------------------------------------------
+    # Defining equations before adding the central point:
+    #
+    # x*y_i-F_i, i=1,...,n
+    # --------------------------------------------------------
+
+    base_equations = []
+
+    for i in range(
+        1,
+        n + 1
+    ):
+
+        base_equations.append(
+            "x*y"
+            + str(i)
+            + "-F"
+            + str(i)
+        )
+
+    if odd_case:
+
+        base_equations.append(
+            "Theta"
+        )
+
+    # --------------------------------------------------------
+    # Add the central point.
+    #
+    # z=0 gives the original centered construction.
+    #
+    # z=1 forces
+    #
+    #     x=y0=...=yn=0
+    #
+    # and hence contributes exactly one point.
+    # --------------------------------------------------------
+
+    equations = []
+
+    equations.append(
+        "z*(z-1)"
+    )
+
+    for R in base_equations:
+
+        equations.append(
+            "(1-z)*("
+            + R
+            + ")"
+        )
+
+    equations.append(
+        "z*x"
+    )
+
+    for i in range(
+        n + 1
+    ):
+
+        equations.append(
+            "z*y"
+            + str(i)
+        )
+
+    # finite-field equations
+
+    equations.append(
+        "z^qq-z"
+    )
+
+    equations.append(
+        "x^qq-x"
+    )
+
+    for i in range(
+        n + 1
+    ):
+
+        equations.append(
+            "y"
+            + str(i)
+            + "^qq-y"
+            + str(i)
+        )
 
     lines.append("")
-    lines.append("    I := ideal(")
 
-    for i, equation in enumerate(equations):
-        comma = "," if i < len(equations) - 1 else ""
-        lines.append("        " + equation + comma)
+    lines.append(
+        "    I := ideal("
+    )
 
-    lines.append("    );")
+    for i, equation in enumerate(
+        equations
+    ):
+
+        comma = (
+            ","
+            if i < len(equations)-1
+            else ""
+        )
+
+        lines.append(
+            "        "
+            + equation
+            + comma
+        )
+
+    lines.append(
+        "    );"
+    )
+
     lines.append("")
-    lines.append("    J := groebnerBasis I;")
-    lines.append("    computedCount := #flatten entries basis(S/ideal J);")
+
+    lines.append(
+        "    J := groebnerBasis I;"
+    )
+
+    lines.append(
+        "    computedCount := "
+        "#flatten entries basis(S/I);"
+    )
+
     lines.append("")
-    lines.append("    (qq,computedCount)")
-    lines.append(")")
+
+    lines.append(
+        "    expectedCount := "
+        "1+(("
+        + str(m)
+        + "*qq*(qq-1))//2);"
+    )
+
     lines.append("")
 
-    q_string = "{" + ",".join(str(q) for q in good_qs) + "}"
+    lines.append(
+        "    (qq,computedCount,expectedCount)"
+    )
 
-    lines.append("goodQs = " + q_string + ";")
-    lines.append("results = apply(goodQs, qq -> f(qq));")
-    lines.append("results")
+    lines.append(
+        ")"
+    )
 
-    return "\n".join(lines)
+    lines.append("")
 
-# 13. DISPLAY
+    q_string = (
+        "{"
+        + ",".join(
+            str(q)
+            for q in good_qs
+        )
+        + "}"
+    )
 
-def show(m, good_qs=None):
+    lines.append(
+        "goodQs = "
+        + q_string
+        + ";"
+    )
+
+    lines.append(
+        "results = apply("
+        "goodQs, qq -> f(qq)"
+        ");"
+    )
+
+    lines.append(
+        "results"
+    )
+
+    return "\n".join(
+        lines
+    )
+
+
+# ============================================================
+# 15. DISPLAY
+# ============================================================
+
+def show(
+    m,
+    good_qs=None
+):
+
     m = validate_m(m)
-    odd_case = m % 2 == 1
+
+    odd_case = (
+        m % 2 == 1
+    )
+
     e = associated_even_integer(m)
-    N = block_serial(e)
 
-    block_chain = parent_block_chain(e)
-    number_chain = parent_number_chain(e)
+    print(
+        "=" * 80
+    )
 
-    print("=" * 80)
-    print("m =", m)
-    print("Case =", "odd" if odd_case else "even")
+    print(
+        "m =",
+        m
+    )
+
+    print(
+        "Case =",
+        (
+            "odd"
+            if odd_case
+            else "even"
+        )
+    )
 
     if odd_case:
-        print("Associated even integer m+1 =", e)
 
-    print("Block =", block_label(N), "=", block_tuple(N))
-    print("Parent-block chain =", " -> ".join(block_label(A) for A in block_chain))
-    print("Parent-number chain =", " -> ".join(str(a) for a in number_chain))
+        print(
+            "Associated even integer =",
+            e
+        )
 
-    if odd_case:
-        print("Even code C(" + str(e) + ") = " + even_code_string(e))
-        print("Odd code C_o(" + str(m) + ") = " + general_code_string(m))
-    else:
-        print("Code C(" + str(m) + ") = " + general_code_string(m))
+    print(
+        "n("
+        + str(e)
+        + ") =",
+        n_value(e)
+    )
 
-    print("=" * 80)
+    print(
+        "Parent chain =",
+        " -> ".join(
+            str(a)
+            for a
+            in parent_number_chain(e)
+        )
+    )
+
+    print(
+        "Block chain =",
+        " -> ".join(
+            block_chain(e)
+        )
+    )
+
     print("")
-    print("Polynomials F_i:")
-    print("")
 
-    for i, polynomial in enumerate(polynomial_list(m), start=1):
-        print("F_" + str(i) + " = " + polynomial)
+    print(
+        "Internal recursive code =",
+        even_code_string(e)
+    )
+
+    print(
+        "(The word 'seed' above is only an internal Python tag.)"
+    )
 
     if odd_case:
+
+        print(
+            "Odd construction = "
+            "even centered family for "
+            + str(e)
+            + " together with Theta(X,Y0)"
+        )
+
+    print(
+        "=" * 80
+    )
+
+    print("")
+
+    print(
+        "Associated centered family:"
+    )
+
+    print("")
+
+    for i, polynomial in enumerate(
+        polynomial_list(e),
+        start=1
+    ):
+
+        print(
+            "F_"
+            + str(i)
+            + " = "
+            + polynomial
+        )
+
+    if odd_case:
+
         print("")
-        print("G_q(X,Z) = 2^(q-1)X(X^Lambda_q-1)+(1-2^(q-1))X^(q-1)tau_q(Z)")
-        print("Lambda_q = q(q-1)/2")
-        print("For q=p^r:")
-        print("tau_q(Z) = Z+Z^p+...+Z^(p^(r-1))")
+
+        print(
+            "Theta(X,Y_0) = "
+            "2^(q-1)X(X^Lambda_q-1)"
+            "+"
+            "(1-2^(q-1))"
+            "X^(q-1)Tr(Y_0)"
+        )
+
+        print(
+            "Lambda_q = q(q-1)/2"
+        )
 
     print("")
-    print("=" * 80)
-    print("MACAULAY2 CODE TO COPY")
-    print("=" * 80)
+
+    print(
+        "Without central point:"
+    )
+
+    print(
+        "C*_"
+        + str(m)
+        + "(q) = "
+        + str(m)
+        + "q(q-1)/2"
+    )
+
     print("")
-    print(macaulay2_code(m, good_qs=good_qs))
 
-# 14. USER INPUT
-# Change only m and good_qs.
+    print(
+        "With central point:"
+    )
 
-m = 14
+    print(
+        "C_"
+        + str(m)
+        + "(q) = "
+        "1 + "
+        + str(m)
+        + "q(q-1)/2"
+    )
 
-good_qs = [2,3,4,5,7]
+    print("")
 
-# 15. RUN
+    print(
+        "=" * 80
+    )
 
-show(m,good_qs=good_qs)
+    print(
+        "MACAULAY2 CODE"
+    )
+
+    print(
+        "=" * 80
+    )
+
+    print("")
+
+    print(
+        macaulay2_code(
+            m,
+            good_qs=good_qs
+        )
+    )
+
+
+# ============================================================
+# 16. INTERNAL THEORY CHECK
+# ============================================================
+
+def theory_check(
+    max_m=10000
+):
+
+    for m in range(
+        4,
+        max_m + 1,
+        2
+    ):
+
+        C = even_code(m)
+
+        # Lemma 6.5:
+        # the family has n(m) polynomials.
+
+        assert (
+            len(C)
+            ==
+            n_value(m)
+        ), (
+            "Wrong code length at m="
+            + str(m)
+        )
+
+        # Parent chain ends in I_2.
+
+        chain = parent_number_chain(m)
+
+        assert (
+            chain[-1]
+            in (
+                4,
+                6,
+                8,
+                10
+            )
+        )
+
+        if m >= 12:
+
+            p = parent_even_number(m)
+
+            assert (
+                p < m
+            )
+
+            assert (
+                nu(m) >= 0
+            )
+
+            expected = E_code(
+                L_code(
+                    even_code(p)
+                ),
+                nu(m)
+            )
+
+            assert (
+                C == expected
+            ), (
+                "Recursive construction failed at m="
+                + str(m)
+            )
+
+        # Check bracket indices.
+
+        for position, c in enumerate(
+            C,
+            start=1
+        ):
+
+            if len(c.J) > 0:
+
+                assert (
+                    c.J
+                    ==
+                    tuple(
+                        range(
+                            1,
+                            len(c.J)+1
+                        )
+                    )
+                )
+
+                t = (
+                    position - 1
+                )
+
+                s = len(c.J)
+
+                assert (
+                    s < t
+                )
+
+    return True
+
+# ============================================================
+# 17. USER INPUT
+# ============================================================
+
+m = 15
+
+
+good_qs = [
+    2,
+    3,
+    4,
+    5,
+    7
+]
+# ============================================================
+# 18. RUN
+# ============================================================
+
+show(
+    m,
+    good_qs=good_qs
+)
