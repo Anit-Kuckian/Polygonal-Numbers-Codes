@@ -6,7 +6,6 @@ from functools import lru_cache
 #
 # Allowed entries:
 #
-#     Y0
 #     Q0
 #     Q
 #     Q[1,...,s]
@@ -164,7 +163,7 @@ def block_chain(m):
 # ============================================================
 # 4. INITIAL CODES
 #
-# C(4)  = (Y0, sigma_4)
+# C(4)  = (Q0, sigma_4)
 # C(6)  = (Q0, sigma_6)
 # C(8)  = (Q0, sigma_8)
 # C(10) = (Q0, sigma_10)
@@ -174,7 +173,7 @@ def initial_code(m):
 
     if m == 4:
         return (
-            CodeSym("Y0"),
+            CodeSym("Q0"),
             CodeSym("sigma", 4)
         )
 
@@ -204,7 +203,6 @@ def initial_code(m):
 #
 # Table 2:
 #
-# Y0                    -> beta
 # Q0                    -> Q
 # Q                     -> Q[1]
 # Q[1,...,s]            -> Q[1,...,s+1]
@@ -215,9 +213,6 @@ def initial_code(m):
 # ============================================================
 
 def lift_symbol(c):
-
-    if c.kind == "Y0":
-        return CodeSym("beta")
 
     if c.kind == "Q0":
         return CodeSym("Q")
@@ -295,9 +290,6 @@ def even_code(m):
 # ============================================================
 
 def symbol_string(c):
-
-    if c.kind == "Y0":
-        return "Y0"
 
     if c.kind == "Q0":
         return "Q0"
@@ -380,9 +372,6 @@ def polynomial_notation(c, position):
 
     # position is 1-based
     final_index = position - 1
-
-    if c.kind == "Y0":
-        return "Y_0"
 
     if c.kind == "Q0":
         return "Q_0(Y_0)"
@@ -492,36 +481,22 @@ def expand_beta(arguments, V):
 # ============================================================
 # 12. MACAULAY2 EXPANSION OF sigma_{a,s}
 #
-# sigma_{4,1}(U,V)  = V
-# sigma_{6,1}(U,V)  = V
-# sigma_{8,1}(U,V)  = alpha(U,V)+gamma(U)V
-# sigma_{10,1}(U,V) = alpha(U,V)
-#
-# For s >= 2:
-#
-# sigma_{a,s}(U0,...,Us)
-#   = alpha(U0,Us)
-#     + gamma(U0)sigma_{a,s-1}(U1,...,Us)
+# sigma_{a,1}(U,V) = Omega(U,V) * product ell_j(U,V),
+# j=0,...,(a-4)/2, exactly as in Section 7.
+# Omega(U,V)=Delta(U)+Delta(V)-Delta(U)*Delta(V).
+# ell0=1, ell1=V, ell2=U, ell3=U+V.
 # ============================================================
 
 def sigma_base(a, U, V):
 
-    if a in (4, 6):
-        return V
+    if a not in (4, 6, 8, 10):
+        raise ValueError("a must belong to {4,6,8,10}.")
 
-    if a == 8:
-        return (
-            "("
-            + "alpha(" + U + "," + V + ")"
-            + "+"
-            + "gamma(" + U + ")*" + V
-            + ")"
-        )
+    factors = ["Omega(" + U + "," + V + ")"]
+    for j in range((a - 4)//2 + 1):
+        factors.append("ell" + str(j) + "(" + U + "," + V + ")")
 
-    if a == 10:
-        return "alpha(" + U + "," + V + ")"
-
-    raise ValueError("a must belong to {4,6,8,10}.")
+    return "(" + "*".join(factors) + ")"
 
 
 def expand_sigma(a, arguments, V):
@@ -553,9 +528,6 @@ def expand_sigma(a, arguments, V):
 def polynomial_M2(c, position):
 
     final_index = position - 1
-
-    if c.kind == "Y0":
-        return "y0"
 
     if c.kind == "Q0":
         return "Q0(y0)"
@@ -603,7 +575,7 @@ def polynomial_list_M2(m):
 # For odd m we adjoin Theta(X,Y0).
 # ============================================================
 
-def macaulay2_code(m, good_qs=None):
+def macaulay2_code(m, good_qs=None, omega_M2=None, ell_M2=None):
 
     m = validate_m(m)
 
@@ -615,6 +587,14 @@ def macaulay2_code(m, good_qs=None):
         good_qs = [2, 3, 4, 5, 7]
 
     good_qs = [int(q) for q in good_qs]
+
+    # Explicit definitions supplied in the manuscript.
+    if omega_M2 is None:
+        omega_M2 = "Delta(U)+Delta(V)-Delta(U)*Delta(V)"
+    if ell_M2 is None:
+        ell_M2 = {0:"1", 1:"V", 2:"U", 3:"U+V"}
+    if any(j not in ell_M2 for j in range(4)):
+        raise ValueError("ell_M2 must have entries 0,1,2,3.")
 
     C = even_code(e)
 
@@ -668,6 +648,9 @@ def macaulay2_code(m, good_qs=None):
     lines.append(
         "    alpha := (U,V) -> Delta(U)*V*(V+U);"
     )
+    lines.append("    Omega := (U,V) -> (" + omega_M2 + ");")
+    for j in range(4):
+        lines.append("    ell" + str(j) + " := (U,V) -> (" + ell_M2[j] + ");")
     lines.append("")
 
     # Associated family F_1,...,F_n
@@ -802,7 +785,7 @@ def macaulay2_code(m, good_qs=None):
 # 15. DISPLAY
 # ============================================================
 
-def show(m, good_qs=None):
+def show(m, good_qs=None, omega_M2=None, ell_M2=None):
 
     m = validate_m(m)
 
@@ -894,21 +877,30 @@ def show(m, good_qs=None):
     print("=" * 80)
     print("")
 
-    print(
-        macaulay2_code(
-            m,
-            good_qs=good_qs
+    try:
+        print(
+            macaulay2_code(
+                m,
+                good_qs=good_qs,
+                omega_M2=omega_M2,
+                ell_M2=ell_M2
+            )
         )
-    )
+    except ValueError as exc:
+        print("Macaulay2 generation blocked:", exc)
 
 
 # ============================================================
 # 16. USER INPUT
 # ============================================================
 
-m = 6
+m = 20
 
 good_qs = [2, 3, 4, 5, 7]
+
+# Definitions from the manuscript (passed to the Macaulay2 generator).
+omega_M2 = "Delta(U)+Delta(V)-Delta(U)*Delta(V)"
+ell_M2 = {0:"1", 1:"V", 2:"U", 3:"U+V"}
 
 
 # ============================================================
@@ -917,5 +909,7 @@ good_qs = [2, 3, 4, 5, 7]
 
 show(
     m,
-    good_qs=good_qs
+    good_qs=good_qs,
+    omega_M2=omega_M2,
+    ell_M2=ell_M2
 )
